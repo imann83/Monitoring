@@ -8,6 +8,7 @@ import logging
 import threading
 import time
 import sys
+import os
 from datetime import datetime
 from flask import Flask, jsonify, render_template_string
 from skinbaron_monitor import SkinBaronMonitor
@@ -28,6 +29,9 @@ TELEGRAM_TOKEN = "7794367450:AAG4-FJbNRGja9xbglkgFtE_hyB1Tohb7C8"
 CHAT_ID = "887116840"
 CHECK_INTERVAL = 1  # seconds
 
+# Get port from environment variable for Render.com compatibility
+PORT = int(os.environ.get("PORT", 5000))
+
 # Global variables for monitoring status
 monitor_status = {
     "is_running": False,
@@ -42,7 +46,6 @@ monitor_status = {
 app = Flask(__name__)
 
 def monitoring_thread():
-    """Background thread function for monitoring SkinBaron"""
     global monitor_status
     
     logging.info("Starting SkinBaron CS:GO marketplace monitor in background thread...")
@@ -56,32 +59,38 @@ def monitoring_thread():
         chat_id=CHAT_ID
     )
     
-    # Update status
     monitor_status["is_running"] = True
     monitor_status["start_time"] = datetime.now()
-    
-    # Send startup notification
+
     try:
-        monitor.send_startup_notification()
-        logging.info("Startup notification sent successfully")
-    except Exception as e:
-        logging.error(f"Failed to send startup notification: {e}")
-        monitor_status["last_error"] = str(e)
-    
-    # Main monitoring loop
-    while monitor_status["is_running"]:
+        # Send startup notification
         try:
-            monitor.check_for_changes()
-            monitor_status["last_check"] = datetime.now()
-            monitor_status["total_checks"] += 1
-            monitor_status["last_error"] = None
-            
-            time.sleep(CHECK_INTERVAL)
-            
+            monitor.send_startup_notification()
+            logging.info("Startup notification sent successfully")
         except Exception as e:
-            logging.error(f"Error in monitoring loop: {e}")
+            logging.error(f"Failed to send startup notification: {e}")
             monitor_status["last_error"] = str(e)
-            time.sleep(5)  # Wait 5 seconds before retrying on error
+
+        while monitor_status["is_running"]:
+            try:
+                monitor.check_for_changes()
+                monitor_status["last_check"] = datetime.now()
+                monitor_status["total_checks"] += 1
+                monitor_status["last_error"] = None
+                
+                time.sleep(CHECK_INTERVAL)
+            except Exception as e:
+                logging.error(f"Error in monitoring loop: {e}")
+                monitor_status["last_error"] = str(e)
+                time.sleep(5)
+
+    except Exception as e:
+        logging.error(f"Fatal error in monitoring thread: {e}")
+        monitor_status["last_error"] = str(e)
+
+    finally:
+        # وقتی اینجا رسیدیم یعنی thread داره تموم میشه، وضعیت رو False کن
+        monitor_status["is_running"] = False
 
 # HTML template for status page
 HTML_TEMPLATE = """
@@ -242,6 +251,6 @@ if __name__ == '__main__':
     monitoring_thread_obj = threading.Thread(target=monitoring_thread, daemon=True)
     monitoring_thread_obj.start()
     
-    # Start Flask web server
-    logging.info("Starting Flask web server on port 5000...")
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    # Start Flask web server, binding to the port from environment (Render requirement)
+    logging.info(f"Starting Flask web server on port {PORT}...")
+    app.run(host='0.0.0.0', port=PORT, debug=False)
