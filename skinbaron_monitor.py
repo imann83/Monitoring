@@ -291,3 +291,9 @@ class SkinBaronMonitor:
         message += "Monitor has been shut down gracefully."
         
         self.telegram_notifier.send_message(message)
+def send_alive_notification(self, message="ربات فعال است"):
+    try:
+        self.send_telegram_message(message)
+    except Exception as e:
+        logging.error(f"Failed to send alive notification: {e}")
+        
