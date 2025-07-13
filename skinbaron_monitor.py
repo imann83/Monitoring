@@ -309,7 +309,7 @@ def main():
     # Run monitor in loop
     while True:
         monitor.check_for_changes()
-        time.sleep(1)  # 1-second interval between checks
+        time.sleep(2)  # 1-second interval between checks
 
 if __name__ == "__main__":
     main()
