@@ -3,16 +3,15 @@ Product tracking module for detecting changes in product listings
 """
 
 import logging
-import json
-from typing import List, Dict, Set
+from typing import List, Dict
 from datetime import datetime
+from collections import Counter
 
 class ProductTracker:
     """Tracks product changes and maintains state"""
     
     def __init__(self):
         self.previous_products = []
-        self.previous_signatures = set()
         self.first_run = True
         
     def check_changes(self, current_products: List[Dict]) -> List[Dict]:
@@ -22,40 +21,53 @@ class ProductTracker:
         if self.first_run:
             logging.info("First run - establishing baseline")
             self.previous_products = current_products.copy()
-            self.previous_signatures = {p['signature'] for p in current_products}
             self.first_run = False
             return []
         
-        current_signatures = {p['signature'] for p in current_products}
+        # Count signature occurrences
+        current_signatures = [p['signature'] for p in current_products if 'signature' in p]
+        previous_signatures = [p['signature'] for p in self.previous_products if 'signature' in p]
         
-        # Detect new products (products that weren't in previous list)
-        new_signatures = current_signatures - self.previous_signatures
-        removed_signatures = self.previous_signatures - current_signatures
+        current_counter = Counter(current_signatures)
+        previous_counter = Counter(previous_signatures)
         
-        # Find new products
-        for product in current_products:
-            if product['signature'] in new_signatures:
-                changes.append({
-                    'type': 'new_product',
-                    'product': product,
-                    'timestamp': datetime.now().isoformat()
-                })
+        # Detect new products (even if same signature appears more times now)
+        for signature, count in current_counter.items():
+            prev_count = previous_counter.get(signature, 0)
+            if count > prev_count:
+                matched = 0
+                for product in current_products:
+                    if product['signature'] == signature:
+                        changes.append({
+                            'type': 'new_product',
+                            'product': product,
+                            'timestamp': datetime.utcnow().isoformat()
+                        })
+                        matched += 1
+                        if matched >= (count - prev_count):
+                            break
         
-        # Find removed products
-        for product in self.previous_products:
-            if product['signature'] in removed_signatures:
-                changes.append({
-                    'type': 'removed_product',
-                    'product': product,
-                    'timestamp': datetime.now().isoformat()
-                })
+        # Detect removed products
+        for signature, count in previous_counter.items():
+            curr_count = current_counter.get(signature, 0)
+            if curr_count < count:
+                matched = 0
+                for product in self.previous_products:
+                    if product['signature'] == signature:
+                        changes.append({
+                            'type': 'removed_product',
+                            'product': product,
+                            'timestamp': datetime.utcnow().isoformat()
+                        })
+                        matched += 1
+                        if matched >= (count - curr_count):
+                            break
         
         # Check for position changes
         changes.extend(self.detect_position_changes(current_products))
         
         # Update tracking state
         self.previous_products = current_products.copy()
-        self.previous_signatures = current_signatures
         
         return changes
     
@@ -63,25 +75,34 @@ class ProductTracker:
         """Detect if products have changed positions"""
         position_changes = []
         
-        # Create mapping of signatures to positions for both lists
-        current_positions = {p['signature']: p['position'] for p in current_products}
-        previous_positions = {p['signature']: p['position'] for p in self.previous_products}
+        current_positions = {}
+        for p in current_products:
+            key = (p['signature'], p['position'])
+            current_positions.setdefault(p['signature'], []).append(p['position'])
         
-        # Find products that changed position
+        previous_positions = {}
+        for p in self.previous_products:
+            key = (p['signature'], p['position'])
+            previous_positions.setdefault(p['signature'], []).append(p['position'])
+        
+        # Compare positions
         for signature in current_positions:
             if signature in previous_positions:
-                current_pos = current_positions[signature]
-                previous_pos = previous_positions[signature]
+                curr_pos_list = current_positions[signature]
+                prev_pos_list = previous_positions[signature]
                 
-                if current_pos != previous_pos:
-                    # Find the product data
-                    product = next(p for p in current_products if p['signature'] == signature)
-                    position_changes.append({
-                        'type': 'position_change',
-                        'product': product,
-                        'previous_position': previous_pos,
-                        'new_position': current_pos,
-                        'timestamp': datetime.now().isoformat()
-                    })
+                for new_pos in curr_pos_list:
+                    if new_pos not in prev_pos_list:
+                        product = next((p for p in current_products if p['signature'] == signature and p['position'] == new_pos), None)
+                        if product:
+                            prev_pos = prev_pos_list[0]  # Take first previous
+                            position_changes.append({
+                                'type': 'position_change',
+                                'product': product,
+                                'previous_position': prev_pos,
+                                'new_position': new_pos,
+                                'timestamp': datetime.utcnow().isoformat()
+                            })
         
         return position_changes
+        
