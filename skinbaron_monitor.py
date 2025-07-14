@@ -5,20 +5,20 @@ from bs4 import BeautifulSoup
 from typing import List, Dict, Optional
 from product_tracker import ProductTracker
 from telegram_notifier import TelegramNotifier
-from pushover_notifier import PushoverNotifier  # اضافه شده
+from pushover_notifier import PushoverNotifier
 
 class SkinBaronMonitor:
     def __init__(self, url: str, telegram_token: str, chat_id: str):
         self.url = url
         self.telegram_notifier = TelegramNotifier(telegram_token, chat_id)
-        self.pushover_notifier = PushoverNotifier(  # اضافه شده
+        self.pushover_notifier = PushoverNotifier(
             user_key="uuhb4p38no4o13os33uakfe5su3ed4",
             api_token="a5u6n3uhp19izybbhkojqkbfh25ff5"
         )
         self.product_tracker = ProductTracker()
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.5',
             'Accept-Encoding': 'gzip, deflate',
@@ -32,27 +32,56 @@ class SkinBaronMonitor:
             response = self.session.get(self.url, timeout=10)
             response.raise_for_status()
             return BeautifulSoup(response.content, 'html.parser')
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             logging.error(f"Error fetching page: {e}")
             return None
 
     def extract_products(self, soup: BeautifulSoup) -> List[Dict]:
         products = []
-        product_selectors = ['.item-card', '.product-item', '.skin-item', '[data-item-id]']
-        product_elements = []
-        for selector in product_selectors:
-            elements = soup.select(selector)
-            if elements and len(elements) >= 10:
-                product_elements = elements[:10]
-                break
-        for i, element in enumerate(product_elements):
-            try:
-                product_data = self.parse_product_element(element, i)
-                if product_data:
-                    products.append(product_data)
-            except Exception as e:
-                continue
-        return products
+        try:
+            product_selectors = [
+                '.item-card',
+                '.product-item',
+                '.skin-item',
+                '.market-item',
+                '[data-item-id]',
+                '.item-list .item',
+                '.product-list .product',
+                '.skin-list .skin'
+            ]
+
+            product_elements = []
+            for selector in product_selectors:
+                elements = soup.select(selector)
+                if elements and len(elements) >= 10:
+                    product_elements = elements[:10]
+                    break
+
+            if not product_elements:
+                price_elements = soup.find_all(['div', 'span'], string=lambda t: t and ('€' in t or '$' in t or '£' in t))
+                potential_products = []
+                for elem in price_elements:
+                    for parent in elem.parents:
+                        if parent.name in ['div', 'article', 'li'] and parent not in potential_products:
+                            if len(parent.get_text().strip()) > 20:
+                                potential_products.append(parent)
+                                break
+                product_elements = potential_products[:10]
+
+            for i, element in enumerate(product_elements):
+                if i >= 10:
+                    break
+                try:
+                    product_data = self.parse_product_element(element, i)
+                    if product_data:
+                        products.append(product_data)
+                except Exception as e:
+                    logging.warning(f"Error parsing product {i}: {e}")
+            logging.info(f"Extracted {len(products)} products")
+            return products
+        except Exception as e:
+            logging.error(f"Error extracting products: {e}")
+            return []
 
     def parse_product_element(self, element, index: int) -> Optional[Dict]:
         try:
@@ -80,20 +109,39 @@ class SkinBaronMonitor:
             price_elem = element.select_one(selector)
             if price_elem:
                 return price_elem.get_text(strip=True)
+        text = element.get_text()
+        import re
+        for pattern in [r'€\s*\d+[.,]\d+', r'\d+[.,]\d+\s*€', r'\$\s*\d+[.,]\d+', r'\d+[.,]\d+\s*\$', r'£\s*\d+[.,]\d+']:
+            match = re.search(pattern, text)
+            if match:
+                return match.group().strip()
         return "N/A"
 
     def extract_product_name(self, element) -> str:
-        selectors = ['.item-name', '.product-name', '[class*="name"]']
+        selectors = ['.item-name', '.product-name', '.skin-name', '.title', 'h1', 'h2', 'h3', 'h4', '[class*="name"]', '[class*="title"]']
         for selector in selectors:
             name_elem = element.select_one(selector)
             if name_elem:
-                return name_elem.get_text(strip=True)
-        return "Unknown"
+                name = name_elem.get_text(strip=True)
+                if len(name) > 5:
+                    return name
+        texts = [t.strip() for t in element.stripped_strings]
+        for text in texts:
+            if len(text) > 10 and not any(char in text for char in '€$£'):
+                return text[:50]
+        return f"Product {element.get('data-id', 'Unknown')}"
 
     def extract_product_id(self, element) -> str:
-        for attr in ['data-item-id', 'data-product-id']:
+        for attr in ['data-item-id', 'data-product-id', 'data-id', 'id']:
             if element.get(attr):
                 return str(element.get(attr))
+        link = element.select_one('a[href]')
+        if link:
+            href = link.get('href', '')
+            import re
+            id_match = re.search(r'/(\d+)', href)
+            if id_match:
+                return id_match.group(1)
         return str(hash(element.get_text()[:100]) % 10000)
 
     def extract_product_link(self, element) -> str:
@@ -109,9 +157,11 @@ class SkinBaronMonitor:
     def check_for_changes(self):
         soup = self.fetch_page()
         if not soup:
+            logging.warning("No soup returned")
             return
         current_products = self.extract_products(soup)
         if not current_products:
+            logging.warning("No products extracted.")
             return
         changes = self.product_tracker.check_changes(current_products)
         if changes:
@@ -119,11 +169,9 @@ class SkinBaronMonitor:
             self.pushover_notifier.send_change_notification(changes)
 
     def send_startup_notification(self):
-        message = "🚀 SkinBaron Monitor Started! Monitoring 10 items."
-        self.telegram_notifier.send_message(message)
-        self.pushover_notifier.send_message("SkinBaron monitor started.")
+        self.telegram_notifier.send_message("🚀 SkinBaron Monitor Started")
+        self.pushover_notifier.send_message("SkinBaron Monitor Started")
 
     def send_shutdown_notification(self):
-        message = "🛑 SkinBaron Monitor Stopped"
-        self.telegram_notifier.send_message(message)
-        self.pushover_notifier.send_message("SkinBaron monitor stopped.")
+        self.telegram_notifier.send_message("🛑 SkinBaron Monitor Stopped")
+        self.pushover_notifier.send_message("SkinBaron Monitor Stopped")
