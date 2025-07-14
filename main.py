@@ -22,7 +22,7 @@ logging.basicConfig(
 def main():
     """Main function to run the SkinBaron monitor"""
     # Configuration
-    SKINBARON_URL = "https://skinbaron.de/en/csgo?plb=0.03&pub=844&sort=BP"
+    SKINBARON_URL = "https://skinbaron.de/en/csgo?plb=0.04&pub=844&sort=BP"
     TELEGRAM_TOKEN = "7794367450:AAG4-FJbNRGja9xbglkgFtE_hyB1Tohb7C8"
     CHAT_ID = "887116840"
     CHECK_INTERVAL = 1  # seconds
