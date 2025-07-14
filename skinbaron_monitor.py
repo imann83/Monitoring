@@ -10,40 +10,18 @@ from bs4 import BeautifulSoup
 from typing import List, Dict, Optional
 from product_tracker import ProductTracker
 from telegram_notifier import TelegramNotifier
-
-# اضافه کردن ماژول pushover
-import http.client
-import json
-
-class PushoverNotifier:
-    """Simple Pushover notifier"""
-    def __init__(self, user_key: str, app_token: str):
-        self.user_key = user_key
-        self.app_token = app_token
-
-    def send_message(self, message: str):
-        conn = http.client.HTTPSConnection("api.pushover.net:443")
-        payload = f"user={self.user_key}&token={self.app_token}&message={message}"
-        headers = { 'Content-Type': 'application/x-www-form-urlencoded' }
-        conn.request("POST", "/1/messages.json", payload, headers)
-        response = conn.getresponse()
-        if response.status != 200:
-            logging.error(f"Pushover send failed: {response.status} {response.reason}")
-        conn.close()
+from pushover_notifier import PushoverNotifier
+import threading
 
 class SkinBaronMonitor:
     """Main monitor class for SkinBaron marketplace"""
     
-    def __init__(self, url: str, telegram_token: str, chat_id: str, pushover_user: str = None, pushover_token: str = None):
+    def __init__(self, url: str, telegram_token: str, chat_id: str):
         self.url = url
         self.telegram_notifier = TelegramNotifier(telegram_token, chat_id)
+        self.pushover_notifier = PushoverNotifier()
         self.product_tracker = ProductTracker()
         self.session = requests.Session()
-        
-        # Pushover notifier if credentials provided
-        self.pushover_notifier = None
-        if pushover_user and pushover_token:
-            self.pushover_notifier = PushoverNotifier(pushover_user, pushover_token)
         
         # Set headers to mimic a real browser
         self.session.headers.update({
@@ -79,8 +57,6 @@ class SkinBaronMonitor:
         products = []
         
         try:
-            # ... (همون کد قبلی extract_products بدون تغییر)
-            
             product_selectors = [
                 '.item-card',
                 '.product-item',
@@ -111,12 +87,14 @@ class SkinBaronMonitor:
                                 if len(parent.get_text().strip()) > 20:
                                     potential_products.append(parent)
                                     break
+                    
                     product_elements = potential_products[:10]
                     logging.debug(f"Found {len(product_elements)} products using price-based detection")
             
             for i, element in enumerate(product_elements):
                 if i >= 10:
                     break
+                
                 try:
                     product_data = self.parse_product_element(element, i)
                     if product_data:
@@ -134,7 +112,6 @@ class SkinBaronMonitor:
     
     def parse_product_element(self, element, index: int) -> Optional[Dict]:
         """Parse individual product element to extract key information"""
-        # ... (همون کد بدون تغییر)
         try:
             text_content = element.get_text(strip=True)
             price = self.extract_price(element)
@@ -142,6 +119,7 @@ class SkinBaronMonitor:
             product_id = self.extract_product_id(element)
             product_link = self.extract_product_link(element)
             signature = f"{name}_{price}_{product_id}_{index}"
+            
             product_data = {
                 'position': index + 1,
                 'name': name,
@@ -151,13 +129,14 @@ class SkinBaronMonitor:
                 'signature': signature,
                 'raw_text': text_content[:200]
             }
+            
             return product_data
+            
         except Exception as e:
             logging.warning(f"Error parsing product element: {e}")
             return None
     
     def extract_price(self, element) -> str:
-        # ... (بدون تغییر)
         price_selectors = [
             '.price',
             '.item-price',
@@ -165,10 +144,12 @@ class SkinBaronMonitor:
             '[class*="price"]',
             '[data-price]'
         ]
+        
         for selector in price_selectors:
             price_elem = element.select_one(selector)
             if price_elem:
                 return price_elem.get_text(strip=True)
+        
         text = element.get_text()
         import re
         price_patterns = [
@@ -178,14 +159,15 @@ class SkinBaronMonitor:
             r'\d+[.,]?\d*\s*\$',
             r'£\s*\d+[.,]?\d*'
         ]
+        
         for pattern in price_patterns:
             match = re.search(pattern, text)
             if match:
                 return match.group().strip()
+        
         return "N/A"
     
     def extract_product_name(self, element) -> str:
-        # ... (بدون تغییر)
         name_selectors = [
             '.item-name',
             '.product-name',
@@ -195,24 +177,28 @@ class SkinBaronMonitor:
             '[class*="name"]',
             '[class*="title"]'
         ]
+        
         for selector in name_selectors:
             name_elem = element.select_one(selector)
             if name_elem:
                 name = name_elem.get_text(strip=True)
                 if len(name) > 5:
                     return name
+        
         texts = [t.strip() for t in element.stripped_strings]
         for text in texts:
             if len(text) > 10 and not any(char in text for char in '€$£'):
                 return text[:50]
+        
         return f"Product {element.get('data-id', 'Unknown')}"
     
     def extract_product_id(self, element) -> str:
-        # ... (بدون تغییر)
         id_attrs = ['data-item-id', 'data-product-id', 'data-id', 'id']
+        
         for attr in id_attrs:
             if element.get(attr):
                 return str(element.get(attr))
+        
         link = element.select_one('a[href]')
         if link:
             href = link.get('href', '')
@@ -220,10 +206,10 @@ class SkinBaronMonitor:
             id_match = re.search(r'/(\d+)', href)
             if id_match:
                 return id_match.group(1)
+        
         return str(hash(element.get_text()[:100]) % 10000)
     
     def extract_product_link(self, element) -> str:
-        # ... (بدون تغییر)
         link = element.select_one('a[href]')
         if link:
             href = link.get('href', '')
@@ -231,10 +217,24 @@ class SkinBaronMonitor:
                 return f"https://skinbaron.de{href}"
             elif href.startswith('http'):
                 return href
+        
         return "https://skinbaron.de"
     
+    def send_message_to_all(self, message: str):
+        # ارسال پیام‌ها در ترد جداگانه برای جلوگیری از تاخیر
+        threading.Thread(target=self.telegram_notifier.send_message, args=(message,), daemon=True).start()
+        threading.Thread(target=self.pushover_notifier.send_message, args=(message,), daemon=True).start()
+    
+    def send_startup_notification(self):
+        message = "🚀 SkinBaron CS:GO Monitor Started!\n\n"
+        message += "✅ Monitoring first 10 products\n"
+        message += "⏱️ Check interval: 1 second\n"
+        message += "🎯 URL: skinbaron.de CS:GO marketplace\n\n"
+        message += "Bot is now actively monitoring for changes..."
+        
+        self.send_message_to_all(message)
+    
     def check_for_changes(self):
-        """Main method to check for product changes"""
         logging.debug("Checking for changes...")
         
         soup = self.fetch_page()
@@ -251,53 +251,32 @@ class SkinBaronMonitor:
         
         if changes:
             logging.info(f"Detected {len(changes)} changes")
-            # پیام تغییرات خیلی کوتاه شد
-            summary = "\n".join([f"{c['position']}. {c['name']} - {c['price']}" for c in changes])
-            message = f"🔔 SkinBaron changes detected:\n{summary}"
-            self.telegram_notifier.send_message(message)
-            if self.pushover_notifier:
-                self.pushover_notifier.send_message(message)
+            message = f"Detected {len(changes)} changes:\n"
+            for change in changes:
+                message += f"- {change['name']} at {change['price']}\n{change['link']}\n\n"
+            self.send_message_to_all(message)
         else:
             logging.debug("No changes detected")
-    
-    def send_startup_notification(self):
-        """Send notification when monitor starts"""
-        message = "🚀 SkinBaron CS:GO Monitor Started!\n\n"
-        message += "✅ Monitoring first 10 products\n"
-        message += "⏱️ Check interval: 2 seconds\n"
-        message += "🎯 URL: skinbaron.de CS:GO marketplace\n\n"
-        message += "Bot is now actively monitoring for changes..."
-        
-        self.telegram_notifier.send_message(message)
-        if self.pushover_notifier:
-            self.pushover_notifier.send_message("SkinBaron Monitor started and running.")
-        
+
 def main():
     import os
-    import logging
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
     
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s [%(levelname)s] %(message)s'
-    )
-    
-    url = "https://skinbaron.de/market/steam/730"  # SkinBaron CS:GO marketplace URL
+    url = "https://skinbaron.de/market/steam/730"
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    pushover_user = os.getenv("PUSHOVER_USER_KEY")
-    pushover_token = os.getenv("PUSHOVER_APP_TOKEN")
     
     if not telegram_token or not chat_id:
         logging.error("Telegram token or chat ID environment variables not set")
         return
     
-    monitor = SkinBaronMonitor(url, telegram_token, chat_id, pushover_user, pushover_token)
+    monitor = SkinBaronMonitor(url, telegram_token, chat_id)
     monitor.send_startup_notification()
     
     while True:
         monitor.check_for_changes()
-        time.sleep(2)  # زمان ۲ ثانیه
-    
+        time.sleep(1)  # 1 second interval
+
 if __name__ == "__main__":
     main()
-            
+        
